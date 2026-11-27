@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import curses
+import locale
 import logging
 import os
 import queue
@@ -64,6 +65,7 @@ def run_tui(
     target: str = "chatgpt",
 ) -> int:
     _setup_logging()
+    _ensure_locale()
     store = Store()
     app = TuiApp(config, store, auto_serve=auto_serve, target=target)
     try:
@@ -76,6 +78,21 @@ def run_tui(
     finally:
         app.cleanup()
     return 0
+
+
+def _ensure_locale() -> None:
+    try:
+        current = locale.setlocale(locale.LC_ALL, "")
+        if "UTF-8" in current.upper() or "UTF8" in current.upper():
+            return
+    except locale.Error:
+        pass
+    for candidate in ("C.UTF-8", "en_US.UTF-8", "UTF-8"):
+        try:
+            locale.setlocale(locale.LC_ALL, candidate)
+            return
+        except locale.Error:
+            continue
 
 
 def _setup_logging() -> None:
@@ -235,16 +252,19 @@ class TuiApp:
         stdscr.timeout(80)
         self._init_colors()
         self.set_status(
-            "i impor · p tempel · Enter buka · s bagikan · ? bantuan",
+            "i impor | p tempel | Enter buka | s bagikan | ? bantuan",
             ttl=10,
         )
+        self.draw()
         while self.running:
-            self.draw()
-            self.tick()
-            key = self.getkey()
+            key = self.getkey(200)
             if key is None:
+                if self.tick():
+                    self.draw()
                 continue
             self.handle_key(key)
+            if self.running:
+                self.draw()
 
     def _init_colors(self) -> None:
         if not curses.has_colors():
@@ -259,7 +279,7 @@ class TuiApp:
             (PAIR_USER, curses.COLOR_GREEN, -1),
             (PAIR_ASSISTANT, curses.COLOR_CYAN, -1),
             (PAIR_SYSTEM, curses.COLOR_YELLOW, -1),
-            (PAIR_DIM, curses.COLOR_WHITE, -1),
+            (PAIR_DIM, -1, -1),
             (PAIR_ERROR, curses.COLOR_RED, -1),
             (PAIR_ACCENT, curses.COLOR_MAGENTA, -1),
             (PAIR_BORDER, curses.COLOR_BLUE, -1),
@@ -279,11 +299,13 @@ class TuiApp:
         except curses.error:
             return None
 
-    def tick(self) -> None:
+    def tick(self) -> bool:
         if self.status_until and now() > self.status_until:
             self.status = ""
             self.status_error = False
             self.status_until = 0
+            return True
+        return False
 
     def set_status(self, text: str, error: bool = False, ttl: float = 7) -> None:
         self.status = text
@@ -328,6 +350,15 @@ class TuiApp:
         for row in range(max(0, y), min(max_h, y + height)):
             self.put(row, x, " " * max(0, min(max_w - x, width)), attr)
 
+    def clear_background(self) -> None:
+        if self.stdscr is None:
+            return
+        try:
+            self.stdscr.erase()
+            self.stdscr.refresh()
+        except curses.error:
+            pass
+
     def draw(self) -> None:
         if self.stdscr is None:
             return
@@ -349,10 +380,26 @@ class TuiApp:
         except curses.error:
             pass
 
+    def draw_modal_status(self) -> None:
+        if not self.status:
+            return
+        try:
+            height, width = self.stdscr.getmaxyx()
+        except curses.error:
+            return
+        marker = "!" if self.status_error else "|"
+        text = f" {marker} {self.status}"
+        attr = self._attr(PAIR_ERROR if self.status_error else PAIR_DIM, curses.A_BOLD)
+        self.put(height - 1, 0, fit_text(text, width), attr)
+        try:
+            self.stdscr.refresh()
+        except curses.error:
+            pass
+
     def _draw_header(self, height: int, width: int, title: str) -> None:
         server = "link ON" if self.server else "link OFF"
         left = f" ctxshare  {title}"
-        right = f"{target_label(self.target)} · {server} "
+        right = f"{target_label(self.target)} | {server} "
         if len(left) + len(right) > width:
             left = fit_text(left, max(4, width - len(right)))
         padded = left + " " * max(0, width - len(left) - len(right)) + right
@@ -398,9 +445,9 @@ class TuiApp:
                     break
                 row = self.rows[index]
                 selected = index == self.selected
-                marker = "›" if selected else " "
+                marker = ">" if selected else " "
                 source = f"{row['provider']}/{row['model']}" if row["model"] else row["provider"]
-                meta = f"{source} · {int(row['message_count'])}p · {fmt_tokens(row['tokens'])}"
+                meta = f"{source} | {int(row['message_count'])}p | {fmt_tokens(row['tokens'])}"
                 title_text = str(row["title"])
                 if width >= 58:
                     available = max(10, width - len(meta) - 4)
@@ -423,26 +470,26 @@ class TuiApp:
         status_row = height - 2
         self.fill(status_row, 0, 1, width, self._attr(PAIR_DIM))
         if self.status:
-            marker = "!" if self.status_error else "·"
+            marker = "!" if self.status_error else "|"
             text = f" {marker} {self.status}"
             attr = self._attr(PAIR_ERROR if self.status_error else PAIR_DIM, curses.A_BOLD)
         else:
             row = self.current_row()
             if row:
                 text = (
-                    f" {row['id']} · {row['provider']}"
+                    f" {row['id']} | {row['provider']}"
                     + (f"/{row['model']}" if row["model"] else "")
-                    + f" · diimpor {fmt_relative(row['imported_at'])}"
+                    + f" | diimpor {fmt_relative(row['imported_at'])}"
                 )
                 if row.get("source_url") and width > 70:
-                    text += f" · {row['source_url']}"
+                    text += f" | {row['source_url']}"
             else:
                 text = " Belum ada context. Tekan i untuk impor."
             attr = self._attr(PAIR_DIM)
         self.put(status_row, 0, fit_text(text, width), attr)
-        hint = "Enter buka · i impor · p tempel · s bagikan · d hapus · / cari · ? bantuan · q keluar"
+        hint = "Enter buka | i impor | p tempel | s bagikan | d hapus | / cari | ? bantuan | q keluar"
         if width < 70:
-            hint = "Enter buka · i impor · p tempel · s share · ? help · q"
+            hint = "Enter buka | i impor | p tempel | s share | ? help | q"
         self.put(height - 1, 0, fit_text(hint, width), self._attr(PAIR_DIM, curses.A_DIM))
 
     def _draw_empty(self, width: int, top: int, height: int) -> None:
@@ -514,11 +561,11 @@ class TuiApp:
         if capsule.model:
             source += f"/{capsule.model}"
         meta = (
-            f" {source} · {len(capsule.messages)} pesan · ~{capsule.tokens()} token · "
+            f" {source} | {len(capsule.messages)} pesan | ~{capsule.tokens()} token | "
             f"{fmt_time(capsule.created_at)}"
         )
         if capsule.source_url and width > 90:
-            meta += f" · {capsule.source_url}"
+            meta += f" | {capsule.source_url}"
         self.put(1, 0, fit_text(meta, width), self._attr(PAIR_DIM, curses.A_DIM))
         top = 2
         view_height = max(1, height - 4)
@@ -530,17 +577,17 @@ class TuiApp:
         status_row = height - 2
         self.fill(status_row, 0, 1, width, self._attr(PAIR_DIM))
         if self.status:
-            marker = "!" if self.status_error else "·"
+            marker = "!" if self.status_error else "|"
             text = f" {marker} {self.status}"
             attr = self._attr(PAIR_ERROR if self.status_error else PAIR_DIM, curses.A_BOLD)
         else:
             position = f"baris {self.view_scroll + 1}/{max(1, len(lines))}"
-            text = f" {position} · target {target_label(self.target)} · {capsule.id}"
+            text = f" {position} | target {target_label(self.target)} | {capsule.id}"
             attr = self._attr(PAIR_DIM)
         self.put(status_row, 0, fit_text(text, width), attr)
-        hint = "Esc kembali · s bagikan · c salin prompt · t target · e ekspor · o sumber · d hapus · ? bantuan"
+        hint = "Esc kembali | s bagikan | c salin prompt | t target | e ekspor | o sumber | d hapus | ? bantuan"
         if width < 76:
-            hint = "Esc kembali · s share · c prompt · t target · e ekspor · ? help"
+            hint = "Esc kembali | s share | c prompt | t target | e ekspor | ? help"
         self.put(height - 1, 0, fit_text(hint, width), self._attr(PAIR_DIM, curses.A_DIM))
 
     # -- keys --------------------------------------------------------------
@@ -726,7 +773,7 @@ class TuiApp:
             return
         job = JobDialog(
             self,
-            "Mengambil context…",
+            "Mengambil context...",
             lambda: resolve_input(str(source), self.store),
         )
         capsules = job.run()
@@ -752,7 +799,7 @@ class TuiApp:
                 single.startswith(("http://", "https://", "ctx1."))
                 or Path(os.path.expanduser(single)).is_file()
             ):
-                job = JobDialog(self, "Mengambil context…", lambda: resolve_input(single, self.store))
+                job = JobDialog(self, "Mengambil context...", lambda: resolve_input(single, self.store))
                 capsules = job.run()
                 if job.error:
                     TextDialog(self, "Gagal impor", _error_lines(job.error)).run()
@@ -824,14 +871,14 @@ class TuiApp:
                     (
                         f"{index:>2}. {item.title}",
                         index - 1,
-                        f"{source} · {len(item.messages)} pesan · ~{item.tokens()} token",
+                        f"{source} | {len(item.messages)} pesan | ~{item.tokens()} token",
                     )
                 )
             choice = ListDialog(
                 self,
                 f"{len(capsules)} percakapan ditemukan",
                 items,
-                footer="Enter pilih · Esc batal",
+                footer="Enter pilih | Esc batal",
             ).run()
             if choice is None:
                 return
@@ -850,7 +897,7 @@ class TuiApp:
             if row["id"] == capsule_id:
                 self.selected = index
                 break
-        self.set_status(f"Tersimpan: {capsule_id} — {capsule.title}", ttl=6)
+        self.set_status(f"Tersimpan: {capsule_id} - {capsule.title}", ttl=6)
 
     def share_selected(self) -> None:
         row = self.current_row()
@@ -913,10 +960,10 @@ class TuiApp:
 
     def choose_target(self) -> None:
         items = [
-            (f"{'●' if key == self.target else ' '} {TARGETS[key]['label']}", key, TARGETS[key]["hint"])
+            (f"{'*' if key == self.target else ' '} {TARGETS[key]['label']}", key, TARGETS[key]["hint"])
             for key in ("chatgpt", "claude", "gemini", "generic")
         ]
-        selected = ListDialog(self, "Target handoff", items, footer="Enter pilih · Esc batal").run()
+        selected = ListDialog(self, "Target handoff", items, footer="Enter pilih | Esc batal").run()
         if not selected:
             return
         self.target = str(selected)
@@ -1017,7 +1064,7 @@ class TuiApp:
             "ALUR HANDOFF",
             "  1. Di ChatGPT/Claude/Gemini: buat Share link percakapan.",
             "  2. Di ctxshare: i (impor link), atau p (tempel transkrip).",
-            "  3. Pilih capsule → s → pilih target → c salin prompt.",
+            "  3. Pilih capsule -> s -> pilih target -> c salin prompt.",
             "  4. Buka chatbot target, New chat, tempel prompt, lanjutkan.",
             "",
             "LIBRARY",
@@ -1031,9 +1078,9 @@ class TuiApp:
             "  q       keluar (Ctrl+Q juga)",
             "",
             "VIEWER",
-            "  Esc     kembali · PgUp/PgDn scroll · g/G atas/bawah",
-            "  s       link/gist · c salin prompt target · t ganti target",
-            "  e       ekspor Markdown · o buka sumber · d hapus",
+            "  Esc     kembali | PgUp/PgDn scroll | g/G atas/bawah",
+            "  s       link/gist | c salin prompt target | t ganti target",
+            "  e       ekspor Markdown | o buka sumber | d hapus",
             "",
             "TARGET",
             "  ChatGPT (~128k token), Claude (~200k), Gemini (~1M).",
@@ -1042,7 +1089,7 @@ class TuiApp:
             "",
             "FALLBACK",
             "  Kalau share link tidak bisa dibaca (login/format berubah),",
-            "  buka di browser → salin transkrip → p. Format yang dikenali:",
+            "  buka di browser -> salin transkrip -> p. Format yang dikenali:",
             "  'You said:' / 'ChatGPT said:', 'Human:' / 'Assistant:',",
             "  heading Markdown, dan label provider.",
             "",
@@ -1069,21 +1116,34 @@ class Dialog:
         self.done = False
         self.result: Any = None
 
+    def render(self) -> None:
+        self.app.clear_background()
+        self.draw()
+        self.app.draw_modal_status()
+
     def run(self) -> Any:
+        self.render()
         while not self.done and self.app.running:
-            self.app.draw()
-            self.draw()
-            key = self.app.getkey(80)
+            key = self.app.getkey(200)
             if key is None:
-                self.app.tick()
-                self.tick()
+                changed = bool(self.tick())
+                if self.app.tick():
+                    changed = True
+                if changed:
+                    self.render()
                 continue
             self.handle_key(key)
+            if not self.done:
+                self.render()
         self.app.tick()
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
         return self.result
 
-    def tick(self) -> None:
-        pass
+    def tick(self) -> bool:
+        return False
 
     def handle_key(self, key: Any) -> None:
         if _is_escape(key):
@@ -1104,13 +1164,13 @@ class Dialog:
         x, y, width, height = self.rect(width, height)
         self.app.fill(y, x, height, width, 0)
         border = self.app._attr(PAIR_BORDER)
-        top = "┌" + "─" * (width - 2) + "┐"
-        bottom = "└" + "─" * (width - 2) + "┘"
+        top = "+" + "-" * (width - 2) + "+"
+        bottom = "+" + "-" * (width - 2) + "+"
         self.app.put(y, x, top, border)
         self.app.put(y + height - 1, x, bottom, border)
         for row in range(1, height - 1):
-            self.app.put(y + row, x, "│", border)
-            self.app.put(y + row, x + width - 1, "│", border)
+            self.app.put(y + row, x, "|", border)
+            self.app.put(y + row, x + width - 1, "|", border)
         label = title if title is not None else self.title
         label = fit_text(f" {label} ", width - 4)
         self.app.put(y, x + 2, label, self.app._attr(PAIR_ACCENT, curses.A_BOLD))
@@ -1129,7 +1189,7 @@ class ListDialog(Dialog):
         app: TuiApp,
         title: str,
         items: Sequence[Tuple[str, Any, str]],
-        footer: str = "Enter pilih · Esc tutup",
+        footer: str = "Enter pilih | Esc tutup",
     ):
         super().__init__(app)
         self.title = title
@@ -1158,7 +1218,7 @@ class ListDialog(Dialog):
             if index >= len(self.items):
                 break
             label, _value, detail = self.items[index]
-            marker = "›" if index == self.selected else " "
+            marker = ">" if index == self.selected else " "
             line = f"{marker} {label}"
             attr = (
                 self.app._attr(PAIR_ACCENT, curses.A_BOLD | curses.A_REVERSE)
@@ -1239,7 +1299,7 @@ class PromptDialog(Dialog):
                 self.app._attr(PAIR_DIM, curses.A_DIM),
             )
         input_y = y + 2 if self.label else y + 1
-        self.app.put(input_y, x + 1, "› ", self.app._attr(PAIR_ACCENT, curses.A_BOLD))
+        self.app.put(input_y, x + 1, "> ", self.app._attr(PAIR_ACCENT, curses.A_BOLD))
         available = max(1, inner_w - 3)
         start = 0
         if self.cursor >= available:
@@ -1253,7 +1313,7 @@ class PromptDialog(Dialog):
         self.app.put(
             y + inner_h - 1,
             x + 1,
-            "Enter lanjut · Esc batal · Ctrl+U hapus baris",
+            "Enter lanjut | Esc batal | Ctrl+U hapus baris",
             self.app._attr(PAIR_DIM, curses.A_DIM),
         )
         try:
@@ -1324,7 +1384,7 @@ class ConfirmDialog(Dialog):
         self.app.put(
             y + inner_h - 1,
             x + 1,
-            "y = ya · n/Esc = batal",
+            "y = ya | n/Esc = batal",
             self.app._attr(PAIR_DIM, curses.A_DIM),
         )
         try:
@@ -1377,7 +1437,7 @@ class TextDialog(Dialog):
             self.app.put(y + index, x + 1, fit_text(line, inner_w - 2), 0)
         footer = "Esc tutup"
         if len(wrapped) > view:
-            footer = f"PgUp/PgDn · {self.scroll + 1}/{max(1, len(wrapped) - view + 1)} · Esc tutup"
+            footer = f"PgUp/PgDn | {self.scroll + 1}/{max(1, len(wrapped) - view + 1)} | Esc tutup"
         self.app.put(
             y + inner_h - 1,
             x + 1,
@@ -1420,29 +1480,36 @@ class JobDialog(Dialog):
             curses.curs_set(0)
         except curses.error:
             pass
+        self.app.clear_background()
+        self.draw()
         while not self.done and self.app.running:
-            self.app.draw()
-            self.draw()
-            key = self.app.getkey(80)
+            key = self.app.getkey(120)
             if key is not None and _is_escape(key):
                 self.done = True
                 break
             self.tick()
             if self.done:
                 break
+            self.app.clear_background()
+            self.draw()
         self.app.tick()
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
         return self.value
 
-    def tick(self) -> None:
+    def tick(self) -> bool:
         try:
             ok, value = self.result_queue.get_nowait()
         except queue.Empty:
-            return
+            return True
         if ok:
             self.value = value
         else:
             self.error = value if isinstance(value, BaseException) else Exception(str(value))
         self.done = True
+        return True
 
     def draw(self) -> None:
         elapsed = time.time() - self.started
@@ -1488,8 +1555,8 @@ class PreviewDialog(Dialog):
         tokens = capsule.tokens()
         lines = [
             capsule.title,
-            f"{len(capsule.messages)} pesan · ~{tokens} token · dari {source}",
-            f"dibuat {fmt_time(capsule.created_at)} · target {target_label(self.app.target)}",
+            f"{len(capsule.messages)} pesan | ~{tokens} token | dari {source}",
+            f"dibuat {fmt_time(capsule.created_at)} | target {target_label(self.app.target)}",
         ]
         if window and tokens > window * 0.8:
             lines.append(f"! Konteks ~{tokens} token, mendekati batas {target_label(self.app.target)}.")
@@ -1499,12 +1566,14 @@ class PreviewDialog(Dialog):
                 "Pertama: " + " ".join(first.split())[:180],
                 "Terakhir: " + " ".join(last.split())[:180],
                 "",
-                "Enter/s simpan · t ubah judul · Esc batal",
+                "Enter/s simpan | t ubah judul | Esc batal",
             ]
         )
         wrapped: List[str] = []
         for line in lines:
             wrapped.extend(wrap_text(line, width - 4) if line else [""])
+        while wrapped and not wrapped[-1].strip():
+            wrapped.pop()
         height = min(len(wrapped) + 4, screen_h - 2)
         x, y, inner_w, inner_h = self.frame(width, height)
         for index, line in enumerate(wrapped[: inner_h - 1]):
@@ -1575,13 +1644,13 @@ class ShareDialog(Dialog):
                 self.gist_queue.put((False, exc))
 
         threading.Thread(target=work, name="ctxshare-gist", daemon=True).start()
-        self.app.set_status("Mengunggah secret gist…", ttl=0)
+        self.app.set_status("Mengunggah secret gist...", ttl=0)
 
-    def tick(self) -> None:
+    def tick(self) -> bool:
         try:
             ok, value = self.gist_queue.get_nowait()
         except queue.Empty:
-            return
+            return False
         self.uploading = False
         if ok:
             self.gist_url = str(value)
@@ -1589,6 +1658,7 @@ class ShareDialog(Dialog):
         else:
             self.gist_error = str(value)
             self.app.set_status(f"Gist gagal: {value}", error=True, ttl=12)
+        return True
 
     def draw(self) -> None:
         try:
@@ -1602,7 +1672,7 @@ class ShareDialog(Dialog):
         tokens = self.capsule.tokens()
         lines: List[str] = [
             f"Capsule : {self.capsule.title}",
-            f"Pesan   : {len(self.capsule.messages)} · ~{tokens} token · {expires}",
+            f"Pesan   : {len(self.capsule.messages)} | ~{tokens} token | {expires}",
             "",
             f"Target prompt: {target_label(target)}  [1] ChatGPT  [2] Claude  [3] Gemini  [0] generic",
         ]
@@ -1626,7 +1696,7 @@ class ShareDialog(Dialog):
         lines.append("")
         lines.append("Link publik (secret gist GitHub, tidak terdaftar):")
         if self.uploading:
-            lines.append("  mengunggah…")
+            lines.append("  mengunggah...")
         elif self.gist_url:
             lines.append(f"  {self.gist_url}")
         elif self.gist_error:
@@ -1636,14 +1706,16 @@ class ShareDialog(Dialog):
         lines.extend(
             [
                 "",
-                "c salin prompt target · l salin link · k kode offline · o buka target",
-                "g gist · r server · 1/2/3/0 ganti target · Esc tutup",
+                "c salin prompt target | l salin link | k kode offline | o buka target",
+                "g gist | r server | 1/2/3/0 ganti target | Esc tutup",
                 "PERINGATAN: siapa pun yang punya link dapat membaca percakapan ini.",
             ]
         )
         wrapped: List[str] = []
         for line in lines:
             wrapped.extend(wrap_text(line, width - 4) if line else [""])
+        while wrapped and not wrapped[-1].strip():
+            wrapped.pop()
         height = min(len(wrapped) + 4, screen_h - 2)
         x, y, inner_w, inner_h = self.frame(width, height)
         for index, line in enumerate(wrapped[: inner_h - 1]):
