@@ -332,7 +332,12 @@ class TuiApp:
             return
         if y < 0 or y >= height or x < 0 or x >= width:
             return
-        clipped = fit_text(text, width - x)
+        limit = width - x
+        if y == height - 1:
+            # Avoid the bottom-right cell: writing it can trigger a terminal
+            # auto-wrap and scroll the whole curses screen.
+            limit -= 1
+        clipped = fit_text(text, max(0, limit))
         if not clipped:
             return
         try:
@@ -404,9 +409,9 @@ class TuiApp:
             left = fit_text(left, max(4, width - len(right)))
         padded = left + " " * max(0, width - len(left) - len(right)) + right
         attr = self._attr(PAIR_HEADER, curses.A_BOLD)
-        self.put(0, 0, fit_text(padded, width), attr)
+        self.put(0, 0, fit_text(padded, max(1, width - 1)), attr)
         try:
-            self.stdscr.chgat(0, 0, width, attr)
+            self.stdscr.chgat(0, 0, max(1, width - 1), attr)
         except curses.error:
             pass
 
