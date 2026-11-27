@@ -1373,12 +1373,13 @@ class PromptDialog(Dialog):
 class ConfirmDialog(Dialog):
     def __init__(self, app: TuiApp, message: str):
         super().__init__(app)
+        self.title = "Konfirmasi"
         self.message = message
 
     def draw(self) -> None:
         width = min(72, max(44, min(len(self.message) + 4, 72)))
         lines = wrap_text(self.message, width - 4)
-        x, y, inner_w, inner_h = self.frame(width, min(len(lines) + 6, 12))
+        x, y, inner_w, inner_h = self.frame(width, min(len(lines) + 4, 12))
         for index, line in enumerate(lines[: inner_h - 3]):
             self.app.put(y + index, x + 1, line, self.app._attr(PAIR_SYSTEM, curses.A_BOLD))
         self.app.put(
@@ -1574,7 +1575,7 @@ class PreviewDialog(Dialog):
             wrapped.extend(wrap_text(line, width - 4) if line else [""])
         while wrapped and not wrapped[-1].strip():
             wrapped.pop()
-        height = min(len(wrapped) + 4, screen_h - 2)
+        height = min(len(wrapped) + 3, screen_h - 2)
         x, y, inner_w, inner_h = self.frame(width, height)
         for index, line in enumerate(wrapped[: inner_h - 1]):
             attr = 0
@@ -1716,7 +1717,7 @@ class ShareDialog(Dialog):
             wrapped.extend(wrap_text(line, width - 4) if line else [""])
         while wrapped and not wrapped[-1].strip():
             wrapped.pop()
-        height = min(len(wrapped) + 4, screen_h - 2)
+        height = min(len(wrapped) + 3, screen_h - 2)
         x, y, inner_w, inner_h = self.frame(width, height)
         for index, line in enumerate(wrapped[: inner_h - 1]):
             attr = 0
