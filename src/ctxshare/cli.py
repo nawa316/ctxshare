@@ -174,10 +174,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.command == "tui":
             from .tui import run_tui
 
-            target = args.target or str((config.get("share") or {}).get("target") or "chatgpt")
+            target = getattr(args, "target", None) or str(
+                (config.get("share") or {}).get("target") or "chatgpt"
+            )
             return run_tui(
                 config,
-                auto_serve=not args.no_serve,
+                auto_serve=not getattr(args, "no_serve", False),
                 target=target,
             )
         store = Store()

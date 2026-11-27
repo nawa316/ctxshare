@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from ctxshare.cli import main
 
@@ -84,6 +85,16 @@ class CliTests(unittest.TestCase):
         code, out, err = self.run_cli("import", "bukan-link")
         self.assertEqual(code, 1)
         self.assertIn("Format tidak dikenal", err)
+
+    @mock.patch("ctxshare.tui.run_tui", return_value=0)
+    @mock.patch("ctxshare.cli.is_tty", return_value=True)
+    def test_no_command_opens_tui(self, _is_tty, run_tui):
+        code, _out, err = self.run_cli()
+        self.assertEqual(code, 0, err)
+        run_tui.assert_called_once()
+        _args, kwargs = run_tui.call_args
+        self.assertIn("auto_serve", kwargs)
+        self.assertIn("target", kwargs)
 
 
 if __name__ == "__main__":
